@@ -154,8 +154,10 @@ pub(crate) fn writes(start: usize, end: usize, guarded: bool) -> Option<(u64, Ve
     }
     j.asked += 1;
     let now = j.asked;
-    let pages = j.found[..count].iter().map(|&at| at / PAGE).chain(guarded);
-    for page in pages.collect::<Vec<_>>() {
+    for &address in &j.found[..count] {
+        j.written.insert(address / PAGE, now);
+    }
+    for page in guarded {
         j.written.insert(page, now);
     }
     Some((
@@ -360,6 +362,10 @@ fn guard(start: usize, end: usize) -> Option<Vec<usize>> {
     {
         let mut g = guards();
         if g.protected.contains(&first) || g.holes.contains(&first) {
+            // A fully clean run needs no per-block tree search or changes.
+            if g.clean.range(first..last).count() == last - first {
+                return Some(Vec::new());
+            }
             let mut written = Vec::new();
             let mut run: Option<usize> = None;
             for block in first..=last {
