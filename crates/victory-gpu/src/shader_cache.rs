@@ -1,7 +1,7 @@
 //! Translated shaders kept on disk (decision 0003): under the configured
-//! cache folder, keyed by the container's content and by the VIctory build
-//! that translated it (the BLAKE3 of our executable), so a rebuilt
-//! translator never serves an old translation. Entries go through
+//! cache folder, keyed by the container and translator inputs. A host-only
+//! rebuild keeps the old translations, but changing the translator, settings
+//! or output encoding invalidates them. Entries go through
 //! `victory-pipeline`'s content-addressed cache, which writes them
 //! atomically; an entry that does not read back is translated again.
 //!
@@ -36,9 +36,7 @@ pub(crate) fn counts() -> (u64, u64) {
     (HITS.load(Ordering::Relaxed), MISSES.load(Ordering::Relaxed))
 }
 
-/// What identifies this build: the BLAKE3 of our executable file and of
-/// the translation settings it runs with (the loop limit, which a
-/// diagnostics build can change at run time).
+/// What identifies translations from this build, independent of host-only changes.
 fn build() -> &'static [u8; 32] {
     static BUILD: OnceLock<[u8; 32]> = OnceLock::new();
     BUILD.get_or_init(|| {
@@ -48,33 +46,38 @@ fn build() -> &'static [u8; 32] {
         let other = std::env::var_os("VICTORY_SHADER_BUILD_OF")
             .filter(|_| cfg!(feature = "diagnostics"))
             .map(std::path::PathBuf::from);
-        if let Some(other) = &other {
-            tracing::warn!(of = %other.display(), "shader cache entries of another build are used");
-        }
-        let exe = other.map_or_else(std::env::current_exe, Ok).and_then(std::fs::read);
+        let compiler = env!("VICTORY_TRANSLATOR_HASH");
         let limit = victory_shader::emit::loop_limit();
+        let rays = victory_shader::emit::rays();
         if limit != victory_shader::emit::DEFAULT_LOOP_LIMIT {
             tracing::warn!(
                 limit,
                 "VICTORY_SHADER_LOOP_LIMIT: translated loops stop sooner"
             );
         }
-        match exe {
-            Ok(mut bytes) => {
-                bytes.extend_from_slice(&limit.to_le_bytes());
-                bytes.push(victory_shader::emit::rays().into());
-                *blake3::hash(&bytes).as_bytes()
-            }
-            Err(e) => {
-                // Without it no entry can be trusted: a fresh key per run.
-                tracing::warn!(error = %e, "cannot read our executable; shader cache unused");
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default();
-                *blake3::hash(&now.as_nanos().to_le_bytes()).as_bytes()
+        if let Some(other) = &other {
+            match std::fs::read(other) {
+                Ok(mut bytes) => {
+                    tracing::warn!(of = %other.display(), "using the legacy executable shader cache key");
+                    bytes.extend_from_slice(&limit.to_le_bytes());
+                    bytes.push(rays.into());
+                    return *blake3::hash(&bytes).as_bytes();
+                }
+                Err(error) => tracing::warn!(%error, of = %other.display(), "using the translator shader cache key"),
             }
         }
+        tracing::info!(translator = compiler, "shader cache keyed by translator inputs");
+        source_build(compiler, limit, rays, cfg!(feature = "diagnostics"))
     })
+}
+
+fn source_build(compiler: &str, limit: u32, rays: bool, diagnostics: bool) -> [u8; 32] {
+    let mut hash = blake3::Hasher::new();
+    hash.update(b"victory-shader-source-v1\0");
+    hash.update(compiler.as_bytes());
+    hash.update(&limit.to_le_bytes());
+    hash.update(&[rays.into(), diagnostics.into()]);
+    *hash.finalize().as_bytes()
 }
 
 /// The translation of a console shader container for a host that runs
@@ -317,6 +320,16 @@ fn decode(bytes: &[u8]) -> Option<HostShader> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn source_cache_key_separates_translation_inputs() {
+        let baseline = source_build("translator-a", 512, false, true);
+        assert_eq!(baseline, source_build("translator-a", 512, false, true));
+        assert_ne!(baseline, source_build("translator-b", 512, false, true));
+        assert_ne!(baseline, source_build("translator-a", 1024, false, true));
+        assert_ne!(baseline, source_build("translator-a", 512, true, true));
+        assert_ne!(baseline, source_build("translator-a", 512, false, false));
+    }
 
     fn shader() -> HostShader {
         HostShader {
