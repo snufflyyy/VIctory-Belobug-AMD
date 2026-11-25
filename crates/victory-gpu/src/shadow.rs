@@ -1987,9 +1987,11 @@ impl Shadow {
         let mut before = s.before.lock().unwrap_or_else(|e| e.into_inner());
         let start = self.start as usize;
         // (tile, the start of its view) of tiles without a snapshot yet.
+        // The host mapping can be only 4 KiB-aligned under vkd3d-proton.
+        // Undo the title page offset added by tiles_of, not the host alignment.
         let new: Vec<(u32, usize)> = views
             .iter()
-            .map(|&(at, data, _)| (((at - start) / PAGE) as u32, data & !(PAGE - 1)))
+            .map(|&(at, data, _)| (((at - start) / PAGE) as u32, data - at % PAGE))
             .filter(|(tile, _)| !before.contains_key(tile))
             .collect();
         if new.is_empty() {
