@@ -9,6 +9,8 @@ the game's world on one AMD card.
 copy of the game. It is not affiliated with or endorsed by the game's
 developer or publisher.
 
+For the experimental Fedora setup, see [Fedora with Proton Experimental](docs/fedora-proton.md).
+
 ## State of this fork (2026-11-25)
 
 **Not playable yet: 3 to 5 frames per second.** Tested on one machine only:
