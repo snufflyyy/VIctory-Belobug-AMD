@@ -1290,37 +1290,79 @@ impl Host {
         let first = early.record(self);
         // Deduplicate GPU write ranges once before execution so VRAM card
         // shadows get pre-uploaded / Wave64-hashed in the same GPU wait.
+        // The others walk each copy's merged coverage instead of every
+        // declared view: the world declares overlapping views of one heap
+        // dozens of times a submission, and a page the walk synced to title
+        // memory compares equal for the walks after it, so one walk over
+        // the coverage writes the same bytes (the coverage never bridges a
+        // gap a view did not declare).
         let mut card_writes: Vec<(std::sync::Arc<crate::shadow::Shadow>, usize, usize)> =
             Vec::new();
-        let mut cpu_back: Vec<(std::sync::Arc<crate::shadow::Shadow>, usize, usize)> = Vec::new();
+        // Each copied-back copy and the ranges its steps declared.
+        let mut back_groups: Vec<(
+            std::sync::Arc<crate::shadow::Shadow>,
+            Vec<(usize, usize)>,
+        )> = Vec::new();
+        #[cfg(feature = "diagnostics")]
+        let mut declared_back = 0u64;
         for list in runs {
             for step in &list.deferred().copies {
                 if let Step::GpuWrite(shadow, address, len) = step {
-                    let target = if shadow.is_card() {
-                        &mut card_writes
-                    } else {
-                        &mut cpu_back
-                    };
-                    if !target.iter().any(|(s, a, l)| {
-                        std::sync::Arc::ptr_eq(s, shadow) && (*a, *l) == (*address, *len)
-                    }) {
-                        target.push((shadow.clone(), *address, *len));
+                    if shadow.is_card() {
+                        if !card_writes.iter().any(|(s, a, l)| {
+                            std::sync::Arc::ptr_eq(s, shadow) && (*a, *l) == (*address, *len)
+                        }) {
+                            card_writes.push((shadow.clone(), *address, *len));
+                        }
+                        continue;
+                    }
+                    #[cfg(feature = "diagnostics")]
+                    {
+                        declared_back += 1;
+                    }
+                    let at = back_groups
+                        .iter()
+                        .position(|(s, _)| std::sync::Arc::ptr_eq(s, shadow));
+                    match at {
+                        Some(i) => back_groups[i].1.push((*address, *address + *len)),
+                        None => {
+                            back_groups.push((shadow.clone(), vec![(*address, *address + *len)]))
+                        }
                     }
                 }
             }
         }
         for (shadow, address, len) in batch.bindless_writes.drain(..) {
-            let target = if shadow.is_card() {
-                &mut card_writes
-            } else {
-                &mut cpu_back
-            };
-            if !target.iter().any(|(s, a, l)| {
-                std::sync::Arc::ptr_eq(s, &shadow) && (*a, *l) == (address, len)
-            }) {
-                target.push((shadow, address, len));
+            if shadow.is_card() {
+                if !card_writes.iter().any(|(s, a, l)| {
+                    std::sync::Arc::ptr_eq(s, &shadow) && (*a, *l) == (address, len)
+                }) {
+                    card_writes.push((shadow, address, len));
+                }
+                continue;
+            }
+            #[cfg(feature = "diagnostics")]
+            {
+                declared_back += 1;
+            }
+            let at = back_groups
+                .iter()
+                .position(|(s, _)| std::sync::Arc::ptr_eq(s, &shadow));
+            match at {
+                Some(i) => back_groups[i].1.push((address, address + len)),
+                None => back_groups.push((shadow, vec![(address, address + len)])),
             }
         }
+        let mut cpu_back: Vec<(std::sync::Arc<crate::shadow::Shadow>, usize, usize)> = Vec::new();
+        for (shadow, ranges) in back_groups {
+            for (address, end) in merge_ranges(&ranges) {
+                #[cfg(feature = "diagnostics")]
+                crate::copystat::add(crate::copystat::C::BackWalked, 1);
+                cpu_back.push((shadow.clone(), address, end - address));
+            }
+        }
+        #[cfg(feature = "diagnostics")]
+        crate::copystat::add(crate::copystat::C::BackDeclared, declared_back);
         let (card_before, card_plan, mut card_after) =
             if self.card.get().and_then(|o| o.as_ref()).is_some() || !card_writes.is_empty() {
                 if let Some(engine_lock) = self.card_engine() {
@@ -2704,8 +2746,14 @@ impl HostList {
                     }
                 }
                 Step::GpuWrite(shadow, address, len) => {
-                    // The shaders start from the title's data.
-                    batch.flush();
+                    // The shaders start from the title's data: a refresh of
+                    // this copy declared before the write and overlapping it
+                    // must land first, or `Shadow::update` would go around
+                    // the range forever. With none such pending — the
+                    // world's lists declare the same big ranges dozens of
+                    // times — the flush waits for one that needs it, and
+                    // still runs before the lists do.
+                    batch.flush_writing(shadow, *address, *len);
                     shadow.writing(*address, *len);
                 }
                 Step::Texture(staging, copy) => {
@@ -2731,6 +2779,33 @@ impl HostList {
         }
         uploads
     }
+}
+
+/// Whether a refresh `[from, to)` pending in the batch overlaps a range
+/// `[address, address + end)` a step's shaders write: as `Shadow::update`
+/// skips busy ranges, that refresh must land before the write marks the
+/// range busy, or it could never land. Touching ranges do not count, as
+/// the update's busy filter does not either.
+fn refresh_overlaps_write(from: usize, to: usize, address: usize, end: usize) -> bool {
+    from < end && to > address
+}
+
+/// The coverage of `ranges`, sorted and with overlapping or touching ones
+/// coalesced: copy-back walks it once per copy, however many overlapping
+/// views the submission declared (the world's lists declare the same heap
+/// dozens of times). Zero-length ranges stay — the walk of one clears its
+/// busy mark — and the coverage never bridges a gap no view declared.
+pub(crate) fn merge_ranges(ranges: &[(usize, usize)]) -> Vec<(usize, usize)> {
+    let mut sorted = ranges.to_vec();
+    sorted.sort_unstable();
+    let mut out: Vec<(usize, usize)> = Vec::with_capacity(sorted.len());
+    for (from, to) in sorted {
+        match out.last_mut() {
+            Some((_, end)) if from <= *end => *end = (*end).max(to),
+            _ => out.push((from, to)),
+        }
+    }
+    out
 }
 
 /// A submission's refreshes not done yet, merged per buffer copy into the
@@ -2822,6 +2897,45 @@ impl Batch {
         }
         if let Some((s, a, b)) = run {
             update(&s, a, b - a);
+        }
+    }
+
+    /// [`Batch::flush`] before a step's shaders write `[address, address +
+    /// len)` of `shadow`, only when a refresh of the same copy declared
+    /// before it overlaps the range: that one must land before the write
+    /// marks the range busy, or `Shadow::update` would go around it
+    /// forever. The other refreshes keep their order either way — steps
+    /// between them run first, and the last flush is before the lists run —
+    /// so the dozens of writes between them no longer re-read the copies
+    /// each time.
+    fn flush_writing(
+        &mut self,
+        shadow: &std::sync::Arc<crate::shadow::Shadow>,
+        address: usize,
+        len: usize,
+    ) {
+        let end = address + len;
+        let overlaps = |from: usize, to: usize| refresh_overlaps_write(from, to, address, end);
+        let root = shadow.root_key();
+        let pending = self
+            .refreshes
+            .iter()
+            .any(|(s, from, to)| std::sync::Arc::ptr_eq(s, shadow) && overlaps(*from, *to))
+            || self
+                .pieces
+                .iter()
+                .any(|(s, from, to)| s.root_key() == root && overlaps(*from, *to));
+        #[cfg(feature = "diagnostics")]
+        crate::copystat::add(
+            if pending {
+                crate::copystat::C::WriteFlushes
+            } else {
+                crate::copystat::C::WriteFlushSkips
+            },
+            1,
+        );
+        if pending {
+            self.flush();
         }
     }
 
@@ -4331,6 +4445,89 @@ mod batch {   // Batch::texture_due lives here; `mod tests` is already taken at 
 
         // SAFETY: our reservation.
         unsafe { VirtualFree(base as *mut _, 0, MEM_RELEASE) };
+    }
+
+    #[test]
+    fn merged_coverage_keeps_every_declared_range() {
+        use super::merge_ranges;
+        let declared = [
+            (0x1000usize, 0x9000usize),
+            (0x1000, 0x9000), // the same view, declared again
+            (0x8000, 0x10000), // overlapping
+            (0x3000, 0x4000),  // nested
+            (0x20000, 0x20000), // zero-length
+            (0x18000, 0x20000), // touching the zero-length one
+            (0x30000, 0x34000),
+        ];
+        let merged = merge_ranges(&declared);
+        assert_eq!(
+            merged,
+            [(0x1000, 0x10000), (0x18000, 0x20000), (0x30000, 0x34000)]
+        );
+        // No declared range is lost: each fits inside a merged one.
+        for (a, b) in declared {
+            assert!(
+                merged.iter().any(|&(x, y)| x <= a && b <= y),
+                "range ({a:#x}, {b:#x}) lost"
+            );
+        }
+        // The merged coverage is smaller than the declarations and its
+        // ranges neither overlap nor touch.
+        assert!(merged.len() < declared.len());
+        for w in merged.windows(2) {
+            assert!(w[0].1 < w[1].0);
+        }
+        // Degenerate inputs: nothing declared; a zero-length range on its
+        // own stays, so the walk of it still clears its busy mark; and an
+        // inverted pair cannot be declared (the ranges are clamped), but
+        // must not panic either.
+        assert!(merge_ranges(&[]).is_empty());
+        assert_eq!(merge_ranges(&[(5, 5)]), [(5, 5)]);
+        assert_eq!(merge_ranges(&[(9, 1), (0, 2)]), [(0, 2), (9, 1)]);
+    }
+
+    #[test]
+    fn a_run_of_overlapping_writes_flushes_once() {
+        // One refresh of the big heap is declared, then the same overlapping
+        // views dozens of times, as the world's lists do: before, every
+        // write flushed the batch; after, only the write whose refresh is
+        // still pending and overlaps it.
+        use super::refresh_overlaps_write;
+        const WRITES: usize = 24;
+        let refresh = (0x1000usize, 0x0800_0000usize);
+        let mut pending = true;
+        let (mut before, mut after) = (0, 0);
+        for i in 0..WRITES {
+            let (address, len) = (0x1000 + i * 0x1000, 0x1000);
+            before += 1;
+            if pending && refresh_overlaps_write(refresh.0, refresh.1, address, address + len) {
+                after += 1;
+                pending = false; // the flush drained the batch
+            }
+        }
+        assert_eq!((before, after), (WRITES, 1));
+        // A write of another copy never flushes this copy's refresh ...
+        assert!(!refresh_overlaps_write(
+            refresh.0,
+            refresh.1,
+            0x9000_0000,
+            0x9000_1000
+        ));
+        // ... and one a refresh merely touches does not either, as
+        // `Shadow::update` does not go around a range it touches.
+        assert!(!refresh_overlaps_write(
+            refresh.0,
+            refresh.1,
+            refresh.1,
+            refresh.1 + 0x1000
+        ));
+        // One that overlaps does.
+        assert!(refresh_overlaps_write(
+            refresh.0,
+            refresh.1,
+            refresh.1 - 0x1000,
+            refresh.1 + 0x1000
+        ));
     }
 }
 

@@ -509,10 +509,16 @@ impl Shadow {
         if let Some((root, s)) = self.sparse_root() {
             return root.sparse_writing(s, address, len);
         }
-        self.pending
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .push((address, address + len));
+        {
+            let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
+            // The world declares overlapping views of one heap dozens of
+            // times a submission: a range inside one kept before it adds
+            // no busy extent (every refresh scans the list), and the
+            // coverage copy-back walks contains it.
+            if !pending.iter().any(|&(a, b)| within(a, b, address, address + len)) {
+                pending.push((address, address + len));
+            }
+        }
         let (from, to) = self.inside(address, len);
         // SAFETY: inside the mapping.
         let host =
@@ -636,10 +642,12 @@ impl Shadow {
                 }
             }
         }
-        // Every submitted step that declared the range is done with it (one
-        // submission runs at a time), and the snapshot with the last range.
+        // Every submitted step that declared a range inside this one is done
+        // with it (one submission runs at a time, and what copy-back walks is
+        // the submission's merged coverage of them), and the snapshot with the
+        // last range.
         let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
-        pending.retain(|&r| r != (address, address + len));
+        pending.retain(|&(a, b)| !within(address, address + len, a, b));
         if pending.is_empty()
             && let Some((_, bytes)) = snapshot.take()
         {
@@ -1974,8 +1982,12 @@ impl Shadow {
         let end = address + len;
         let covered = {
             let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
-            let covered = pending.iter().any(|&(a, b)| a <= address && end <= b);
-            pending.push((address, end));
+            // A range inside one kept before it adds no busy extent; the
+            // coverage copy-back walks contains it.
+            let covered = pending.iter().any(|&(a, b)| within(a, b, address, end));
+            if !covered {
+                pending.push((address, end));
+            }
             covered
         };
         #[cfg(feature = "diagnostics")]
@@ -2070,12 +2082,19 @@ impl Shadow {
         });
         let written = written.into_inner();
         let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
-        pending.retain(|&r| r != (address, address + len));
+        pending.retain(|&(a, b)| !within(address, address + len, a, b));
         if pending.is_empty() {
             give_back_tiles(before.drain().map(|(_, buf)| buf));
         }
         written
     }
+}
+
+/// Whether the declared range `(a, b)` is inside `[from, to)`: a write
+/// declared inside one kept before it adds no busy extent, and a copy-back
+/// walk whose merged coverage contains a declared range is done with it.
+fn within(from: usize, to: usize, a: usize, b: usize) -> bool {
+    from <= a && b <= to
 }
 
 /// Merges bytes the GPU changed (`host != old`) into `title`, syncs `host` to
@@ -2598,5 +2617,114 @@ mod tests {
             cached[2],
             baseline[2].as_secs_f64() / cached[2].as_secs_f64(),
         );
+    }
+
+    #[test]
+    fn declared_ranges_inside_kept_ones_are_not_kept_again() {
+        // `Shadow::writing` keeps a declared range only when it extends
+        // the busy extents, and the copy-back walk finishes every range
+        // its merged coverage contains.
+        let keep = |pending: &mut Vec<(usize, usize)>, a: usize, b: usize| {
+            if !pending.iter().any(|&(x, y)| within(x, y, a, b)) {
+                pending.push((a, b));
+            }
+        };
+        let mut pending: Vec<(usize, usize)> = Vec::new();
+        for (a, b) in [(0, 10), (2, 5), (0, 10), (10, 20), (0, 15)] {
+            keep(&mut pending, a, b);
+        }
+        assert_eq!(pending, [(0, 10), (10, 20), (0, 15)]);
+        // The merged coverage (0, 15) finishes the ranges inside it; a
+        // range that extends past it is not finished yet.
+        pending.retain(|&(a, b)| !within(0, 15, a, b));
+        assert_eq!(pending, [(10, 20)]);
+        pending.retain(|&(a, b)| !within(10, 20, a, b));
+        assert!(pending.is_empty());
+        // Boundaries: a range is inside one only with both ends within it,
+        // and a zero-length range finishes only its own walk.
+        assert!(within(4, 8, 4, 4));
+        assert!(!within(4, 8, 8, 9));
+        let mut lone = vec![(5, 5)];
+        lone.retain(|&(a, b)| !within(5, 5, a, b));
+        assert!(lone.is_empty());
+        let mut outside = vec![(4, 6)];
+        outside.retain(|&(a, b)| !within(5, 5, a, b));
+        assert_eq!(outside, [(4, 6)]);
+    }
+
+    /// `Shadow::copy_back`'s walk over `[from, to)`: each page that differs
+    /// from the snapshot is merged with title memory (the real
+    /// `merge_gpu_writes`, which also syncs the page to it). Returns how
+    /// many pages were merged.
+    fn walk(
+        host: &mut [u8],
+        old: &[u8],
+        title: &mut [u8],
+        ranges: &[(usize, usize)],
+    ) -> usize {
+        let mut merged = 0;
+        for &(from, to) in ranges {
+            let mut at = from;
+            while at < to {
+                let n = PAGE.min(to - at);
+                if host[at..at + n] != old[at..at + n] {
+                    merged += 1;
+                    let (h, o) = (&mut host[at..at + n], &old[at..at + n]);
+                    merge_gpu_writes(&mut title[at..at + n], h, o);
+                }
+                at += n;
+            }
+        }
+        merged
+    }
+
+    #[test]
+    fn merged_coverage_copy_back_writes_the_same_bytes_as_overlapping_ranges() {
+        // Dozens of overlapping views of one heap, declared as the world's
+        // lists do: walking each declared range and walking the merged
+        // coverage once write the same bytes, and the merged walk touches
+        // each differing page exactly once.
+        const SPAN: usize = 12 * PAGE;
+        let old: Vec<u8> = (0..SPAN).map(|i| i as u8).collect();
+        let mut host_a = old.clone();
+        // The GPU wrote scattered bytes, and the title's own threads wrote
+        // others while it ran.
+        let gpu_bytes = [PAGE + 7, 2 * PAGE + 9, 5 * PAGE + 100, 8 * PAGE - 1, 9 * PAGE];
+        for at in gpu_bytes {
+            host_a[at] ^= 0xA5;
+        }
+        let mut host_b = host_a.clone();
+        let title0: Vec<u8> = (0..SPAN).map(|i| (i * 7 + 3) as u8).collect();
+        let mut title_a = title0.clone();
+        let mut title_b = title0.clone();
+        // Overlapping views, duplicates among them, as declared in order.
+        let declared: Vec<(usize, usize)> = (0..16)
+            .map(|i| ((i % 4) * PAGE, SPAN - (i % 3) * PAGE))
+            .chain([0, 2, 3].into_iter().map(|i: usize| (i * PAGE, SPAN)))
+            .collect();
+        let merged = crate::host::merge_ranges(&declared);
+        // Sanity: the world's pattern really is redundant.
+        assert!(merged.len() < declared.len());
+        let merged_a = walk(&mut host_a, &old, &mut title_a, &declared);
+        let merged_b = walk(&mut host_b, &old, &mut title_b, &merged);
+        // Identical bytes, before and after.
+        assert_eq!(title_a, title_b);
+        assert_eq!(host_a, host_b);
+        // Every byte the GPU wrote is in title memory (nothing was lost,
+        // wherever the views placed it), and the bytes it did not are the
+        // title's own.
+        for at in gpu_bytes {
+            assert_eq!(title_b[at], host_a[at]);
+        }
+        for at in 0..SPAN {
+            if !gpu_bytes.contains(&at) {
+                assert_eq!(title_b[at], title0[at]);
+            }
+        }
+        // The merged walk merges each differing page exactly once; the
+        // walk per declared range does it again for every view that
+        // covers it.
+        assert_eq!(merged_b, 5);
+        assert!(merged_a > merged_b);
     }
 }
