@@ -30,7 +30,45 @@ The launcher caps the game window at 1280×720. This scales the displayed image 
 
 ## Console profile
 
-The launcher runs the Series X profile by default. Set `VICTORY_CONSOLE=series-s` before `scripts/fedora-proton.sh` to run the Series S profile instead, which the title answers with a lower internal resolution. Any other value is rejected before anything is started. Series X stays the default until live tests confirm the Series S profile works with this title and this GPU path.
+The launcher runs the Series S profile by default, so the title's normal
+Series S rendering features are on; the title itself answers that profile
+with its own lower internal resolution, which is its choice, not a
+reduction made by this launcher. Set `VICTORY_CONSOLE=series-x` before
+`scripts/fedora-proton.sh` for a comparison run at the Series X profile.
+Any other value is rejected before anything is started. Series S is the
+default by operator request, not by a live test: neither profile has been
+compared end to end on this GPU path yet.
+
+## Defaults and fidelity
+
+The launcher's defaults do not deliberately remove title work: it sets no
+pipeline-skipping variable (`VICTORY_SKIP_PIPELINES` stays unset), reduces
+no texture or LOD detail, and disables no depth or stencil twin (those are
+fork additions, not switches). Experimental paths stay off: the launcher
+sets no ray-tracing variable (`VICTORY_RAYS` stays unset; the builders
+crash the device about 25 seconds in), no frame-generation variable, and
+no asynchronous GPU submission (`VICTORY_ASYNC_SUBMIT` stays unset; see
+the Radeon notes). `VICTORY_COPY_MEMORY=1` is the working memory path on
+Fedora/RADV, not a fidelity cut. The defaults are not exact parity with
+the console: known gaps, honestly, are the hair-strand lines and dropped
+passes below, the ambient approximation or its artifacts, the
+ray-traced light that does not run, and the problems listed in the
+repository's README.
+
+## Ambient light
+
+The executable's own default replaces the title's indirect diffuse light
+resolve with a constant approximation (`VICTORY_AMBIENT=<level>`, 0.6 by
+its default; the same light everywhere, so not the title's real indirect
+light). The launcher instead starts the sandbox with `VICTORY_AMBIENT=off`,
+which keeps the title's own resolve output: no fork-added light is applied.
+Be honest about what that leaves: the probes the title's rays would fill do
+not fully run here, so its own output has known artifacts (bright magenta on
+leaves, cloth and paper, and blocks of colour indoors). Set
+`VICTORY_AMBIENT=<level>` before `scripts/fedora-proton.sh` for the
+approximation instead, or `0` for no indirect diffuse light at all. bwrap
+clears the environment, so an operator's value would otherwise be dropped;
+the launcher forwards what is set and fills in `off` when nothing is.
 
 ## Performance checks
 
@@ -50,18 +88,19 @@ The launcher passes `VICTORY_SKIP_MOVIES` through to the executable (unset there
 
 ## Hair strands
 
-The executable skips its hair-strand shaders by default, and the launcher
-starts the sandbox with `VICTORY_HAIR` unset to keep that default. bwrap
-clears the environment, so an operator's `VICTORY_HAIR` would otherwise be
-dropped on the way in; the launcher forwards it only when it is exactly `1`
-and rejects every other value before anything is started. It must not set an
-empty value in place of the unset one, because the executable reads any set
-value, even empty, as opt-in. Skipping is deliberate: some of the strand
-shaders do not translate (an address from a phi) and the rest draw lines all
-over the screen, and running them pays their translation cost on the first
-launch. Whatever does translate stays in the shader cache either way, so an
-opt-in run keeps that work for the next one. Set `VICTORY_HAIR=1` before
-`scripts/fedora-proton.sh` only to test those shaders.
+Hair runs by default: bwrap clears the environment, so the launcher
+forwards `VICTORY_HAIR=1` into the sandbox by hand (the executable runs
+the strand shaders whenever the variable is set; it checks presence, not
+the value). Set `VICTORY_HAIR=0` before `scripts/fedora-proton.sh` to skip
+them for a diagnostic performance run; the launcher drops the variable
+rather than forwarding a value, because the executable would read any set
+value, even `0`, as opt-in. Any other value is rejected before anything
+is started. Known gaps with hair on, honestly: some of the strand shaders
+do not translate (an address from a phi), so their passes are dropped, and
+the rest draw lines all over the screen; the first launch also pays their
+translation cost. Whatever does translate stays in the shader cache either
+way, so an opt-out run keeps that work for the next one. This is not exact
+parity: hair here is visibly imperfect.
 
 ## Radeon notes
 

@@ -1,8 +1,9 @@
 #!/bin/sh
 # Checks the Fedora Proton launcher's VICTORY_CONSOLE handling,
-# VICTORY_SKIP_MOVIES passthrough, and VICTORY_HAIR opt-in. bwrap is
-# replaced by a stub that only records its arguments, so no GPU, Proton
-# prefix, or game file is touched. Run: sh tests/test-fedora-proton.sh
+# VICTORY_SKIP_MOVIES passthrough, VICTORY_HAIR default, and the
+# VICTORY_AMBIENT default. bwrap is replaced by a stub that only records
+# its arguments, so no GPU, Proton prefix, or game file is touched.
+# Run: sh tests/test-fedora-proton.sh
 #
 # Adapted from the glm-console branch's tests/test-fedora-proton.sh
 # (commit 12b42e7) to the launcher as integrated on fedora-proton: this
@@ -45,6 +46,11 @@ hair_env() {
     awk '/^--setenv$/ { getline; if ($0 == "VICTORY_HAIR") { getline; print; exit } }' "$tmp/bwrap.args"
 }
 
+# The value the launcher set VICTORY_AMBIENT to inside the sandbox.
+ambient_env() {
+    awk '/^--setenv$/ { getline; if ($0 == "VICTORY_AMBIENT") { getline; print; exit } }' "$tmp/bwrap.args"
+}
+
 expect_console() {
     expected=$1
     sh "$launcher" --check "$tmp/victory.exe" "$tmp/title.exe" >"$tmp/out" 2>&1 ||
@@ -61,8 +67,10 @@ expect_console() {
 
 sh -n "$launcher" || fail_test 'launcher fails sh -n'
 
+# The Series S profile is the default; Series X stays available for
+# comparison runs.
 unset VICTORY_CONSOLE
-expect_console series-x
+expect_console series-s
 
 VICTORY_CONSOLE=series-x; export VICTORY_CONSOLE
 expect_console series-x
@@ -80,46 +88,68 @@ unset VICTORY_CONSOLE
 
 # VICTORY_SKIP_MOVIES passes through to the sandbox unset when unset,
 # and with its value when it has one.
-expect_console series-x
+expect_console series-s
 [ "$(skip_movies_env)" = '' ] ||
     fail_test 'VICTORY_SKIP_MOVIES unset did not pass through empty'
 
 VICTORY_SKIP_MOVIES=1; export VICTORY_SKIP_MOVIES
-expect_console series-x
+expect_console series-s
 [ "$(skip_movies_env)" = 1 ] ||
     fail_test 'VICTORY_SKIP_MOVIES=1 did not pass through'
 
 VICTORY_SKIP_MOVIES=all; export VICTORY_SKIP_MOVIES
-expect_console series-x
+expect_console series-s
 [ "$(skip_movies_env)" = all ] ||
     fail_test 'VICTORY_SKIP_MOVIES=all did not pass through'
 unset VICTORY_SKIP_MOVIES
 
-# VICTORY_HAIR stays out of the sandbox environment unless it is exactly 1,
-# because the executable reads any set value, even empty, as opt-in.
+# VICTORY_HAIR is forwarded as 1 unless the exact value 0 opts out,
+# because the executable reads any set value, even 0, as opt-in.
 unset VICTORY_HAIR
-expect_console series-x
-if grep -qx 'VICTORY_HAIR' "$tmp/bwrap.args"; then
-    fail_test 'VICTORY_HAIR unset was still passed to the sandbox'
-fi
+expect_console series-s
+[ "$(hair_env)" = 1 ] ||
+    fail_test 'VICTORY_HAIR unset was not forwarded as the hair-on default'
 
 VICTORY_HAIR=; export VICTORY_HAIR
-expect_console series-x
-if grep -qx 'VICTORY_HAIR' "$tmp/bwrap.args"; then
-    fail_test 'empty VICTORY_HAIR was still passed to the sandbox'
-fi
+expect_console series-s
+[ "$(hair_env)" = 1 ] ||
+    fail_test 'empty VICTORY_HAIR was not forwarded as the hair-on default'
 
 VICTORY_HAIR=1; export VICTORY_HAIR
-expect_console series-x
+expect_console series-s
 [ "$(hair_env)" = 1 ] ||
     fail_test 'VICTORY_HAIR=1 did not pass through as --setenv VICTORY_HAIR 1'
+
+VICTORY_HAIR=0; export VICTORY_HAIR
+expect_console series-s
+if grep -qx 'VICTORY_HAIR' "$tmp/bwrap.args"; then
+    fail_test 'VICTORY_HAIR=0 was still passed to the sandbox'
+fi
 
 VICTORY_HAIR=on; export VICTORY_HAIR
 if sh "$launcher" --check "$tmp/victory.exe" "$tmp/title.exe" >"$tmp/out" 2>&1; then
     fail_test 'invalid VICTORY_HAIR was accepted'
 fi
-grep -q "VICTORY_HAIR must be 1 or unset, not 'on'." "$tmp/out" ||
+grep -q "VICTORY_HAIR must be 0, 1, or unset, not 'on'." "$tmp/out" ||
     fail_test 'invalid VICTORY_HAIR produced the wrong diagnostic'
 unset VICTORY_HAIR
+
+# VICTORY_AMBIENT defaults to off, keeping the title's own resolve output;
+# an operator's value passes through as set.
+unset VICTORY_AMBIENT
+expect_console series-s
+[ "$(ambient_env)" = off ] ||
+    fail_test 'VICTORY_AMBIENT unset did not default to off'
+
+VICTORY_AMBIENT=0.6; export VICTORY_AMBIENT
+expect_console series-s
+[ "$(ambient_env)" = 0.6 ] ||
+    fail_test 'VICTORY_AMBIENT=0.6 did not pass through'
+
+VICTORY_AMBIENT=off; export VICTORY_AMBIENT
+expect_console series-s
+[ "$(ambient_env)" = off ] ||
+    fail_test 'VICTORY_AMBIENT=off did not pass through'
+unset VICTORY_AMBIENT
 
 printf '%s\n' 'fedora-proton launcher console tests passed'

@@ -9,16 +9,20 @@ if [ "${1:-}" = --check ]; then
     shift
 fi
 [ "$#" -eq 2 ] || fail 'Usage: sh scripts/fedora-proton.sh [--check] /path/to/victory.exe /path/to/title.exe'
-console=${VICTORY_CONSOLE:-series-x}
+# The Series S profile is the default: the title's normal Series S
+# rendering features, at its own lower internal resolution. Series X stays
+# available for comparison runs.
+console=${VICTORY_CONSOLE:-series-s}
 case "$console" in
     series-x | series-s) ;;
     *) fail "VICTORY_CONSOLE must be series-x or series-s, not '$console'." ;;
 esac
-# Only the exact value 1 opts in; an empty value would still read as set to
-# the executable (it checks is_some), so it is dropped rather than forwarded.
+# Hair runs by default, as the executable needs the variable set for that
+# (it checks is_some, not the value); the exact value 0 is the diagnostic
+# opt-out and is dropped instead of forwarded, so the strands stay skipped.
 case "${VICTORY_HAIR:-}" in
-    '' | 1) ;;
-    *) fail "VICTORY_HAIR must be 1 or unset, not '$VICTORY_HAIR'." ;;
+    '' | 0 | 1) ;;
+    *) fail "VICTORY_HAIR must be 0, 1, or unset, not '$VICTORY_HAIR'." ;;
 esac
 command -v bwrap >/dev/null || fail 'Install bubblewrap first.'
 [ -n "${DISPLAY:-}" ] || fail 'Run from a desktop session with XWayland or X11.'
@@ -74,16 +78,22 @@ if [ -n "${VICTORY_CAPTURE_FRAMES:-}" ]; then
     set -- "$@" --setenv VICTORY_CAPTURE 'Z:\session\frames' \
         --setenv VICTORY_CAPTURE_FRAMES "$VICTORY_CAPTURE_FRAMES"
 fi
-# bwrap --clearenv drops the operator's environment, so an explicit opt-in
-# VICTORY_HAIR=1 must be forwarded by hand. The default stays hair skipped:
-# some strand shaders do not translate (an address from a phi) and the rest
-# draw lines all over the screen, and running them pays their translation
-# cost. No value at all is set otherwise, because the executable reads any
-# set value, even empty, as opt-in; what does translate is kept in the
-# shader cache either way.
-if [ "${VICTORY_HAIR:-}" = 1 ]; then
+# bwrap --clearenv drops the operator's environment, so hair (on by
+# default) and the ambient choice must be forwarded by hand. Hair: the
+# executable runs the strand shaders when the variable is set (it checks
+# is_some, not the value); the exact value 0 is the diagnostic opt-out and
+# is dropped, so the strands stay skipped. Known gaps with hair on: some of
+# the strand shaders do not translate (an address from a phi) and their
+# passes are dropped, and the rest draw lines all over the screen. What
+# does translate is kept in the shader cache either way.
+if [ "${VICTORY_HAIR:-}" != 0 ]; then
     set -- "$@" --setenv VICTORY_HAIR 1
 fi
+# The executable's own ambient default replaces the title's resolve output
+# with a constant approximation. `off` keeps the title's output instead, so
+# that is this launcher's default; set VICTORY_AMBIENT=<level> for the
+# approximation (0.6 is the executable's balance point, 0 for none).
+set -- "$@" --setenv VICTORY_AMBIENT "${VICTORY_AMBIENT:-off}"
 if [ -n "${XAUTHORITY:-}" ] && [ -f "$XAUTHORITY" ]; then
     set -- "$@" --ro-bind "$XAUTHORITY" /run/game-xauthority --setenv XAUTHORITY /run/game-xauthority
 fi
