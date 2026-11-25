@@ -52,6 +52,12 @@ if [ -n "${VICTORY_NATIVE_FXC:-}" ]; then
     overrides="$overrides;d3dcompiler_47=n,b"
     set -- "$@" --ro-bind "$fxc" /app/d3dcompiler_47.dll
 fi
+if [ -n "${VICTORY_SHADER_BUILD_OF:-}" ]; then
+    prior=$(realpath -e -- "$VICTORY_SHADER_BUILD_OF")
+    [ -f "$prior" ] || fail 'VICTORY_SHADER_BUILD_OF must name a previous executable with the same translator.'
+    set -- "$@" --ro-bind "$prior" /app/previous-build.exe \
+        --setenv VICTORY_SHADER_BUILD_OF 'Z:\app\previous-build.exe'
+fi
 if [ -n "${VICTORY_CAPTURE_FRAMES:-}" ]; then
     mkdir -p "$state/frames"
     set -- "$@" --setenv VICTORY_CAPTURE 'Z:\session\frames' \
