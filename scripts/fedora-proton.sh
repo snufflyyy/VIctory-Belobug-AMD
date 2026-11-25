@@ -14,6 +14,12 @@ case "$console" in
     series-x | series-s) ;;
     *) fail "VICTORY_CONSOLE must be series-x or series-s, not '$console'." ;;
 esac
+# Only the exact value 1 opts in; an empty value would still read as set to
+# the executable (it checks is_some), so it is dropped rather than forwarded.
+case "${VICTORY_HAIR:-}" in
+    '' | 1) ;;
+    *) fail "VICTORY_HAIR must be 1 or unset, not '$VICTORY_HAIR'." ;;
+esac
 command -v bwrap >/dev/null || fail 'Install bubblewrap first.'
 [ -n "${DISPLAY:-}" ] || fail 'Run from a desktop session with XWayland or X11.'
 
@@ -67,6 +73,16 @@ if [ -n "${VICTORY_CAPTURE_FRAMES:-}" ]; then
     mkdir -p "$state/frames"
     set -- "$@" --setenv VICTORY_CAPTURE 'Z:\session\frames' \
         --setenv VICTORY_CAPTURE_FRAMES "$VICTORY_CAPTURE_FRAMES"
+fi
+# bwrap --clearenv drops the operator's environment, so an explicit opt-in
+# VICTORY_HAIR=1 must be forwarded by hand. The default stays hair skipped:
+# some strand shaders do not translate (an address from a phi) and the rest
+# draw lines all over the screen, and running them pays their translation
+# cost. No value at all is set otherwise, because the executable reads any
+# set value, even empty, as opt-in; what does translate is kept in the
+# shader cache either way.
+if [ "${VICTORY_HAIR:-}" = 1 ]; then
+    set -- "$@" --setenv VICTORY_HAIR 1
 fi
 if [ -n "${XAUTHORITY:-}" ] && [ -f "$XAUTHORITY" ]; then
     set -- "$@" --ro-bind "$XAUTHORITY" /run/game-xauthority --setenv XAUTHORITY /run/game-xauthority

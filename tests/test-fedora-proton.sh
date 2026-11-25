@@ -1,8 +1,8 @@
 #!/bin/sh
-# Checks the Fedora Proton launcher's VICTORY_CONSOLE handling and
-# VICTORY_SKIP_MOVIES passthrough. bwrap is replaced by a stub that only
-# records its arguments, so no GPU, Proton prefix, or game file is
-# touched. Run: sh tests/test-fedora-proton.sh
+# Checks the Fedora Proton launcher's VICTORY_CONSOLE handling,
+# VICTORY_SKIP_MOVIES passthrough, and VICTORY_HAIR opt-in. bwrap is
+# replaced by a stub that only records its arguments, so no GPU, Proton
+# prefix, or game file is touched. Run: sh tests/test-fedora-proton.sh
 #
 # Adapted from the glm-console branch's tests/test-fedora-proton.sh
 # (commit 12b42e7) to the launcher as integrated on fedora-proton: this
@@ -38,6 +38,11 @@ fail_test() { printf '%s\n' "$*" >&2; exit 1; }
 # environment for VICTORY_SKIP_MOVIES.
 skip_movies_env() {
     awk '/^VICTORY_SKIP_MOVIES$/ { getline; print; exit }' "$tmp/bwrap.args"
+}
+
+# The value the launcher set VICTORY_HAIR to inside the sandbox, if any.
+hair_env() {
+    awk '/^--setenv$/ { getline; if ($0 == "VICTORY_HAIR") { getline; print; exit } }' "$tmp/bwrap.args"
 }
 
 expect_console() {
@@ -88,5 +93,33 @@ VICTORY_SKIP_MOVIES=all; export VICTORY_SKIP_MOVIES
 expect_console series-x
 [ "$(skip_movies_env)" = all ] ||
     fail_test 'VICTORY_SKIP_MOVIES=all did not pass through'
+unset VICTORY_SKIP_MOVIES
+
+# VICTORY_HAIR stays out of the sandbox environment unless it is exactly 1,
+# because the executable reads any set value, even empty, as opt-in.
+unset VICTORY_HAIR
+expect_console series-x
+if grep -qx 'VICTORY_HAIR' "$tmp/bwrap.args"; then
+    fail_test 'VICTORY_HAIR unset was still passed to the sandbox'
+fi
+
+VICTORY_HAIR=; export VICTORY_HAIR
+expect_console series-x
+if grep -qx 'VICTORY_HAIR' "$tmp/bwrap.args"; then
+    fail_test 'empty VICTORY_HAIR was still passed to the sandbox'
+fi
+
+VICTORY_HAIR=1; export VICTORY_HAIR
+expect_console series-x
+[ "$(hair_env)" = 1 ] ||
+    fail_test 'VICTORY_HAIR=1 did not pass through as --setenv VICTORY_HAIR 1'
+
+VICTORY_HAIR=on; export VICTORY_HAIR
+if sh "$launcher" --check "$tmp/victory.exe" "$tmp/title.exe" >"$tmp/out" 2>&1; then
+    fail_test 'invalid VICTORY_HAIR was accepted'
+fi
+grep -q "VICTORY_HAIR must be 1 or unset, not 'on'." "$tmp/out" ||
+    fail_test 'invalid VICTORY_HAIR produced the wrong diagnostic'
+unset VICTORY_HAIR
 
 printf '%s\n' 'fedora-proton launcher console tests passed'

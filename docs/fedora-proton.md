@@ -48,6 +48,21 @@ Use separate logs for different runs. The script summarizes the periodic frame l
 
 The launcher passes `VICTORY_SKIP_MOVIES` through to the executable (unset there when you leave it unset). Set `VICTORY_SKIP_MOVIES=1` before `scripts/fedora-proton.sh` to end the title's non-looping Bink movies on their first playback tick, so a test run reaches the menu without waiting through splash and intro movies. `all` also sends the looping ones to their last frame once. Unset or `0`: off, every movie plays in full. This is not scoped to startup: every non-looping, clock-paced Bink movie the title opens for the rest of the run ends the same way, whenever it plays; use it for test runs, not to judge how the title plays its later movies. The title's own end-of-movie handling (pause, close, sound) runs as at a movie's natural end. From [BRVIctory-ka1qux](https://github.com/ka1qux/BRVIctory-ka1qux) (`VICTORY_SKIP_MOVIES`, commit `3ac02f1`).
 
+## Hair strands
+
+The executable skips its hair-strand shaders by default, and the launcher
+starts the sandbox with `VICTORY_HAIR` unset to keep that default. bwrap
+clears the environment, so an operator's `VICTORY_HAIR` would otherwise be
+dropped on the way in; the launcher forwards it only when it is exactly `1`
+and rejects every other value before anything is started. It must not set an
+empty value in place of the unset one, because the executable reads any set
+value, even empty, as opt-in. Skipping is deliberate: some of the strand
+shaders do not translate (an address from a phi) and the rest draw lines all
+over the screen, and running them pays their translation cost on the first
+launch. Whatever does translate stays in the shader cache either way, so an
+opt-in run keeps that work for the next one. Set `VICTORY_HAIR=1` before
+`scripts/fedora-proton.sh` only to test those shaders.
+
 ## Radeon notes
 
 - The launcher sets `VICTORY_COPY_MEMORY=1`. On Fedora/RADV, the in-place GPU path produced a black window. The copy path restored the menus. See [Belobug issue #19](https://github.com/Belobug/VIctory-Belobug-AMD/issues/19).
