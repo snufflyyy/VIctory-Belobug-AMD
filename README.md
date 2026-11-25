@@ -33,6 +33,30 @@ profile. Nothing here has been run on an NVIDIA or Intel card.
 A driver timeout (Windows resets the display driver, every monitor goes black
 for a moment) happened once in the session this was written in. Expect it.
 
+### Fedora 44 / Proton test on a second machine
+
+Tested on Fedora Linux 44 with an AMD Ryzen 7 5700X, 32 GB RAM and an AMD
+Radeon RX 7800 XT 16 GB (RADV, Mesa 26.2.7). Proton Experimental 11.0-20261112
+provided vkd3d-proton 3.2. SELinux remained enforcing. These tests used a
+private Proton prefix and no changes to the window manager or Steam's files.
+
+- Series X booted, loaded the title DLLs, played sound, drew menus and credits,
+  and reached partially rendered gameplay. Stock Proton's median over 14 world
+  samples was 5,148 ms/frame (0.19 fps), with substantial CPU copy and memory
+  watch costs.
+- Series S reached a visible world with the experimental indexed wineserver:
+  606 ms/frame (1.65 fps) over 32 samples, with dropped draws and incomplete
+  assets. The tested build deliberately skipped hair. The new launcher enables
+  hair by default, but that change has not had a gameplay check.
+- Shader and host-pipeline caches persisted and were reused. One subsequent
+  launch recorded 483 shader-cache hits and no misses; the Series S run loaded
+  1,789 host pipelines and started 1,699 early.
+- These results are not Series S visual parity and do not establish stable
+  gameplay. Hair, low-LOD assets, lighting and some translated pipelines remain
+  incomplete. The performance target is 5 fps first, not the 3 to 5 fps claimed
+  for the different Windows machine above.
+
+
 ### What this fork changes over upstream
 
 Picture:
