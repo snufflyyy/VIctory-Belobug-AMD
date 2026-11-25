@@ -74,6 +74,7 @@ pub extern "system" fn CreateWindowExW(
     param: *const c_void,
 ) -> HWND {
     let (x, y, width, height) = fit(parent, x, y, width, height);
+    let style = fixed_style(parent, window_limit(), style);
     // SAFETY: the title's own arguments, forwarded (the size fitted).
     let hwnd = unsafe {
         wm::CreateWindowExW(
@@ -100,6 +101,7 @@ pub extern "system" fn CreateWindowExA(
     param: *const c_void,
 ) -> HWND {
     let (x, y, width, height) = fit(parent, x, y, width, height);
+    let style = fixed_style(parent, window_limit(), style);
     // SAFETY: the title's own arguments, forwarded (the size fitted).
     let hwnd = unsafe {
         wm::CreateWindowExA(
@@ -152,6 +154,25 @@ fn window_limit() -> Option<(i32, i32)> {
         }
         parsed
     })
+}
+
+/// The styles that offer a resize: the sizing border (`WS_THICKFRAME`,
+/// which also carries the maximize box's frame drag) and `WS_MAXIMIZEBOX`.
+const RESIZABLE: u32 = wm::WS_THICKFRAME | wm::WS_MAXIMIZEBOX;
+
+/// A top-level window's style with the resizable styles dropped when
+/// `VICTORY_WINDOW_MAX` caps it: the operator asked for a fixed test
+/// window, and the host's window manager is not to stretch it. Wine maps
+/// `WS_THICKFRAME` to the X11 size hints' resize offer, so a compositor
+/// that tiles (Hyprland) keeps a floating one at the capped size instead
+/// of offering borders and maximize. Without the limit (or for a child
+/// window) the title's own style passes through unchanged.
+fn fixed_style(parent: HWND, limit: Option<(i32, i32)>, style: u32) -> u32 {
+    if parent.is_null() && limit.is_some() {
+        style & !RESIZABLE
+    } else {
+        style
+    }
 }
 
 fn fit_with_limit(
@@ -443,6 +464,21 @@ mod tests {
         ] {
             assert_eq!(parse_window_limit(bad), None, "{bad}");
         }
+    }
+
+    #[test]
+    fn a_capped_top_level_window_is_not_resizable() {
+        let top = std::ptr::null_mut();
+        let child = 1 as HWND;
+        let style = wm::WS_OVERLAPPEDWINDOW | wm::WS_VISIBLE;
+        // A capped test window: the sizing border and the maximize box go.
+        assert_eq!(
+            fixed_style(top, Some((1280, 720)), style),
+            style & !(wm::WS_THICKFRAME | wm::WS_MAXIMIZEBOX)
+        );
+        // Stock: no limit, or a window that is not top-level.
+        assert_eq!(fixed_style(top, None, style), style);
+        assert_eq!(fixed_style(child, Some((1280, 720)), style), style);
     }
 
     #[test]

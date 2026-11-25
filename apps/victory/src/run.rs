@@ -147,6 +147,8 @@ pub fn run(
         inner: &resolver,
         dlls: &dlls,
     };
+    // `VICTORY_SKIP_MOVIES`: unset, it passes every import through.
+    let with_dlls = victory_hle::modules::bink::SkipMovies::from_env(&with_dlls, &dlls);
     let show = |name: &str, report: BindReport| {
         println!(
             "bound          {name}: {} hle, {} host, {} title, {} missing",
@@ -164,6 +166,8 @@ pub fn run(
     }
     let exe_name = exe.file_name().unwrap_or_default().to_string_lossy();
     show(&exe_name, image.bind_imports(&with_dlls, policy)?);
+    // It borrows `dlls`, which the title's start takes.
+    drop(with_dlls);
     if !execute {
         println!("not executing (pass --execute to start the title)");
         return Ok(());

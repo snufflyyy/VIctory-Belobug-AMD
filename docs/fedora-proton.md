@@ -26,7 +26,11 @@ The launcher keeps saves, logs from crashes, and caches under `${XDG_STATE_HOME:
 
 ## Test window and overlay
 
-The launcher caps the game window at 1280×720. This scales the displayed image but does not force the game to render at 720p. MangoHud is on by default. Set `MANGOHUD=0` to hide it, or set `MANGOHUD_CONFIG` to change the displayed metrics.
+The launcher caps the game window at 1280×720. This scales the displayed image but does not force the game to render at 720p. With `VICTORY_WINDOW_MAX` set (the launcher's default), the fitted window is also created without the styles that offer a resize (the sizing border and the maximize box), so host window managers keep it at the capped size. MangoHud is on by default. Set `MANGOHUD=0` to hide it, or set `MANGOHUD_CONFIG` to change the displayed metrics.
+
+## Console profile
+
+The launcher runs the Series X profile by default. Set `VICTORY_CONSOLE=series-s` before `scripts/fedora-proton.sh` to run the Series S profile instead, which the title answers with a lower internal resolution. Any other value is rejected before anything is started. Series X stays the default until live tests confirm the Series S profile works with this title and this GPU path.
 
 ## Performance checks
 
@@ -39,6 +43,10 @@ python3 scripts/proton-frame-summary.py first.log second.log
 Use separate logs for different runs. The script summarizes the periodic frame logs. Its draw-count filter does not guarantee that two scenes match.
 
 `VICTORY_WINESERVER` selects an optional local server built for the exact installed Proton version. The launcher mounts it inside the sandbox only. Leave it unset to use stock Proton.
+
+## Movie skipping
+
+The launcher passes `VICTORY_SKIP_MOVIES` through to the executable (unset there when you leave it unset). Set `VICTORY_SKIP_MOVIES=1` before `scripts/fedora-proton.sh` to end the title's non-looping Bink movies on their first playback tick, so a test run reaches the menu without waiting through splash and intro movies. `all` also sends the looping ones to their last frame once. Unset or `0`: off, every movie plays in full. This is not scoped to startup: every non-looping, clock-paced Bink movie the title opens for the rest of the run ends the same way, whenever it plays; use it for test runs, not to judge how the title plays its later movies. The title's own end-of-movie handling (pause, close, sound) runs as at a movie's natural end. From [BRVIctory-ka1qux](https://github.com/ka1qux/BRVIctory-ka1qux) (`VICTORY_SKIP_MOVIES`, commit `3ac02f1`).
 
 ## Radeon notes
 

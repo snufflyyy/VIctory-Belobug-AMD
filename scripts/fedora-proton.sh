@@ -9,6 +9,11 @@ if [ "${1:-}" = --check ]; then
     shift
 fi
 [ "$#" -eq 2 ] || fail 'Usage: sh scripts/fedora-proton.sh [--check] /path/to/victory.exe /path/to/title.exe'
+console=${VICTORY_CONSOLE:-series-x}
+case "$console" in
+    series-x | series-s) ;;
+    *) fail "VICTORY_CONSOLE must be series-x or series-s, not '$console'." ;;
+esac
 command -v bwrap >/dev/null || fail 'Install bubblewrap first.'
 [ -n "${DISPLAY:-}" ] || fail 'Run from a desktop session with XWayland or X11.'
 
@@ -94,6 +99,7 @@ bwrap --die-with-parent --unshare-pid --unshare-net --unshare-ipc --unshare-uts 
     --setenv VICTORY_WINDOW_MAX "${VICTORY_WINDOW_MAX:-1280x720}" \
     --setenv VICTORY_NO_WATCHDOG "${VICTORY_NO_WATCHDOG:-0}" \
     --setenv VICTORY_KEYS "${VICTORY_KEYS:-}" \
+    --setenv VICTORY_SKIP_MOVIES "${VICTORY_SKIP_MOVIES:-}" \
     --setenv MANGOHUD "${MANGOHUD:-1}" \
     --setenv MANGOHUD_CONFIG "${MANGOHUD_CONFIG:-fps,frame_timing,gpu_stats,cpu_stats,ram,vram,resolution}" \
     --setenv VICTORY_GAME_DIR 'Z:\game' --setenv VICTORY_CACHE_DIR 'Z:\session\cache' \
@@ -110,7 +116,8 @@ bwrap --die-with-parent --unshare-pid --unshare-net --unshare-ipc --unshare-uts 
         fi
         mode=$1
         title=$2
-        set -- run "Z:\game\\${title}" --console series-x
+        console=$3
+        set -- run "Z:\game\\${title}" --console "$console"
         if [ "$mode" = --execute ]; then set -- "$@" --execute; fi
         exec python3 /proton/proton runinprefix "Z:\app\victory.exe" "$@"
-    ' victory-proton "$mode" "$(basename "$title")"
+    ' victory-proton "$mode" "$(basename "$title")" "$console"
