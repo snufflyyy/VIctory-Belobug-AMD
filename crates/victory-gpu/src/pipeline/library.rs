@@ -77,6 +77,22 @@ fn open(device: &ID3D12Device1, blob: Vec<u8>) -> Option<Library> {
     let make = |bytes: &[u8]| -> windows::core::Result<ID3D12PipelineLibrary1> {
         // SAFETY: the bytes outlive the library (kept beside it).
         unsafe {
+            if bytes.is_empty() {
+                // An empty library is asked for with a null blob: an empty
+                // slice's pointer is not null, and vkd3d-proton refuses a
+                // pointer with no bytes (E_INVALIDARG), so under Wine no
+                // pipeline nor early list was ever kept.
+                let mut made = std::ptr::null_mut();
+                (Interface::vtable(device).CreatePipelineLibrary)(
+                    Interface::as_raw(device),
+                    std::ptr::null(),
+                    0,
+                    &ID3D12PipelineLibrary::IID,
+                    &mut made,
+                )
+                .ok()?;
+                return ID3D12PipelineLibrary::from_raw(made).cast();
+            }
             device.CreatePipelineLibrary::<ID3D12PipelineLibrary>(bytes)?.cast()
         }
     };
